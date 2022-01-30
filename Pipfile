@@ -5,11 +5,13 @@ name = "pypi"
 
 [packages]
 pyspark = "*"
+findspark = "*"
 
 [dev-packages]
 pylint = "*"
 bandit = "*"
 black = "*"
+ipykernel = "*"
 
 [requires]
 python_version = "3.8"
