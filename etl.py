@@ -1,9 +1,12 @@
+""" 
+Sparkify ETL process to extract JSON files from S3, tranform data and load into S3 in parquet format
+"""
+
 import configparser
-from datetime import datetime
 import os
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import udf, col, monotonically_increasing_id
-from pyspark.sql.functions import year, month, dayofmonth, dayofweek, hour, weekofyear, date_format, to_timestamp
+from pyspark.sql.functions import col, monotonically_increasing_id
+from pyspark.sql.functions import year, month, dayofmonth, dayofweek, hour, weekofyear, to_timestamp
 
 
 config = configparser.ConfigParser()
@@ -11,30 +14,43 @@ config.read("dl.cfg")
 
 os.environ["AWS_ACCESS_KEY_ID"] = config.get("S3", "AWS_ACCESS_KEY_ID")
 os.environ["AWS_SECRET_ACCESS_KEY"] = config.get("S3", "AWS_SECRET_ACCESS_KEY")
-# os.environ["AWS_SESSION_TOKEN"] = config.get("AWS", "AWS_SESSION_TOKEN")
 
 
 def create_spark_session():
+    """Create a Spark session to transform the data.
+
+    Returns:
+        SparkSession: Spark session.
+    """
     spark = SparkSession.builder.config(
         "spark.jars.packages",
-        "org.apache.hadoop:hadoop-aws:2.7.0",
+        "org.apache.hadoop:hadoop-aws:3.3.1",
     ).getOrCreate()
 
     return spark
 
 
 def process_song_data(spark, input_data, output_data):
+    """Extract and load song data.
+
+    Args:
+        spark (SparkSession): Spark session.
+        input_data (string): Input path for JSON data.
+        output_data (string): Output path for parquet data.
+    """
     # get filepath to song data file
     song_data = f"{input_data}song_data/*/*/*/*.json"
 
     # read song data file
     df = spark.read.json(song_data)
+    print(f"- Files read from source.")
 
     # extract columns to create songs table $"friend_id".isNotNull
     songs_table = df.filter(col("song_id").isNotNull()).select("song_id", "title", col("artist_id").alias("artist_id"), "year", "duration").dropDuplicates()
 
     # write songs table to parquet files partitioned by year and artist
-    songs_table.write.partitionBy("year", "artist_id").parquet(f"{output_data}/songs")
+    songs_table.write.mode("overwrite").partitionBy("year", "artist_id").parquet(f"{output_data}songs")
+    print(f"- Written songs table to parquet files.")
 
     # extract columns to create artists table
     artists_table = (
@@ -48,15 +64,24 @@ def process_song_data(spark, input_data, output_data):
     )
 
     # write artists table to parquet files
-    artists_table.write.parquet(f"{output_data}/artists.parquet")
+    artists_table.write.mode("overwrite").parquet(f"{output_data}artists")
+    print(f"- Written artists table to parquet files.")
 
 
 def process_log_data(spark, input_data, output_data):
+    """Extract and load log data.
+
+    Args:
+        spark (SparkSession): Spark session.
+        input_data (string): Input path for JSON data.
+        output_data (string): Output path for parquet data.
+    """
     # get filepath to log data file
-    log_data = f"{input_data}/log_data/*/*/*.json"
+    log_data = f"{input_data}log_data/*.json"
 
     # read log data file
     df = spark.read.json(log_data)
+    print(f"- Files read from source.")
 
     # filter by actions for song plays
     df = df.filter(df.page == "NextSong")
@@ -72,16 +97,15 @@ def process_log_data(spark, input_data, output_data):
     )
 
     # write users table to parquet files
-    users_table.write.parquet(f"{output_data}/users.parquet")
+    users_table.write.mode("overwrite").parquet(f"{output_data}users")
+    print(f"- Written users table to parquet files.")
 
     # create timestamp column from original timestamp column
     df = df.withColumn("start_time", to_timestamp(df.ts / 1000))
 
-    df = df.filter(col("userId").isNotNull()).select(col("userId").alias("user_id"), col("firstName").alias("first_name"), col("lastName").alias("last_name"), "gender", "level").dropDuplicates()
-
     # extract columns to create time table
     time_table = (
-        df.select("start_time", "hour", "day", "week", "month", "year", "weekday")
+        df.select("start_time")
         .withColumn("hour", hour(df.start_time))
         .withColumn("day", dayofmonth(df.start_time))
         .withColumn("week", weekofyear(df.start_time))
@@ -92,10 +116,11 @@ def process_log_data(spark, input_data, output_data):
     )
 
     # write time table to parquet files partitioned by year and month
-    time_table.write.parquet(f"{output_data}/time.parquet")
+    time_table.write.mode("overwrite").parquet(f"{output_data}time")
+    print(f"- Written time table to parquet files.")
 
     # read in song data to use for songplays table
-    song_df = spark.read.parquet(f"{output_data}/songs.parquet")
+    song_df = spark.read.parquet(f"{output_data}songs")
 
     # extract columns from joined song and log datasets to create songplays table
     songplays_table = (
@@ -108,16 +133,40 @@ def process_log_data(spark, input_data, output_data):
     )
 
     # write songplays table to parquet files partitioned by year and month
-    songplays_table.write.partitionBy(year(songplays_table.start_time), month(songplays_table.start_time)).parquet(f"{output_data}/songplays")
+    songplays_table.withColumn("year", year(songplays_table.start_time)).withColumn("month", month(songplays_table.start_time)).write.mode("overwrite").partitionBy("year", "month").parquet(
+        f"{output_data}songplays"
+    )
+    print(f"- Written song plays table to parquet files.")
 
 
 def main():
-    spark = create_spark_session()
-    input_data = "s3a://udacity-dend/"
-    output_data = "s3a://s3nanocnrd/"
+    """
+    Sparkify ETL to load data for analytics
 
+    1. Extract song and log data from JSON files on S3 (or local system)
+    2. Transform data into analytics model
+    3. Load processed data back into S3 in parquet format
+    """
+    print(f"--- Sparkify ETL ---\nCreate Spark session... ", end="")
+    spark = create_spark_session()
+    print(f"Done.")
+
+    # Using LOCAL files for testing. Change LOCAL to S3 to use files from AWS.
+    source = "LOCAL"
+
+    # Using LOCAL files for testing. Change LOCAL to S3 to use files from AWS.
+    input_data = config.get(source, "INPUT_DATA").replace("'", "")
+    output_data = config.get(source, "OUTPUT_DATA").replace("'", "")
+
+    print(f"--- Extract song data from {source=}...")
     process_song_data(spark, input_data, output_data)
+    print(f"--- Song data processed.\n")
+
+    print(f"--- Extract log data from {source=}...")
     process_log_data(spark, input_data, output_data)
+    print(f"--- Log data processed.\n")
+
+    print(f"--- ETL completed successfully.")
 
 
 if __name__ == "__main__":
